@@ -19,4 +19,51 @@ config RF_DAT31R5SP
 		Enable driver support for the Mini-Circuits DAT-31R5-SP digital
 		attenuator.
 
+config RF_RFM95
+	bool "Custom SPI RFM95 Driver"
+	default n
+	select SPI
+	---help---
+		Enable SPI RFM95 Driver.
+
+if RF_RFM95
+
+config RF_RFM95_SPI_CS_PIN
+	int "RFM95 SPI CS pin number"
+	default 2
+	---help---
+		Select your board pin dedicated to SPI CS pin for RFM95.
+
+config RF_RFM95_RESET_PIN
+	int "RFM95 Reset pin number"
+	default 1
+	---help---
+		Select your board pin connected to RST RFM95 pin.
+
+config RF_RFM95_SPI_FREQUENCY
+	int "RFM95 SPI bus frequency"
+	default 9000000
+	---help---
+		Select your board pin connected to RST RFM95 pin.
+
+config RF_RFM95_TX_FREQ
+	int "RFM95 TX frequency"
+	default 868000000
+	---help---
+		Select LoRa TX frequency: 433/863-870 for italy.
+
+config RF_RFM95_TX_POWER
+	int "RFM95 TX power"
+	default 17
+	---help---
+		Select LoRa TX power.
+
+config RF_RFM95_SYNC_WORD
+	int "RFM95 sync word"
+	default 0
+	---help---
+		Select packet sync word: Select 0 for none.
+
+endif # RF_RFM95
+
 endif # DRIVERS_RF

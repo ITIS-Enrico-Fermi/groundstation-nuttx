@@ -152,6 +152,8 @@
 #  include "esp32_max6675.h"
 #endif
 
+#include "nuttx/rf/rfm95.h"
+
 #include "esp32-devkitc.h"
 
 /****************************************************************************
@@ -637,13 +639,23 @@ int esp32_bringup(void)
 
 #ifdef CONFIG_SPI_DRIVER
 #  ifdef CONFIG_ESP32_SPI2
-  ret = board_spidev_initialize(ESP32_SPI2);
+  struct spi_dev_s *spi = esp32_spibus_initialize(ESP32_SPI2);
+  if (!spi)
+    {
+      _err("ERROR: Failed to initialize SPI %d bus\n", 0);
+    }
+#endif
+#  endif
+
+/* REGISTER SPI5 RFM95 CUSTOM SPI DRIVER */
+#if defined(CONFIG_SPI) && defined(CONFIG_RF_RFM95)
+
+  snerr("Initializing spi5 for rfm95..\n");
+  ret = rfm95_register("/dev/radio0", spi, ESP32_SPI2);
   if (ret < 0)
     {
-      syslog(LOG_ERR, "Failed to initialize SPI%d driver: %d\n",
-             ESP32_SPI2, ret);
+      _err("ERROR: Failed to register SPI Test Driver\n");
     }
-#  endif
 #endif
 
   /* If we got here then perhaps not all initialization was successful, but
