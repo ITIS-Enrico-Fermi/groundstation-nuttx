@@ -46,8 +46,8 @@ config RF_RFM95_SPI_FREQUENCY
 	---help---
 		Select your board pin connected to RST RFM95 pin.
 
-config RF_RFM95_TX_FREQ
-	int "RFM95 TX frequency"
+config RF_RFM95_FREQ
+	int "RFM95 frequency"
 	default 868000000
 	---help---
 		Select LoRa TX frequency: 433/863-870 for italy.
@@ -63,6 +63,24 @@ config RF_RFM95_SYNC_WORD
 	default 0
 	---help---
 		Select packet sync word: Select 0 for none.
+
+config RF_RFM95_ENABLE_CRC
+	bool "Enable CRC"
+	default y
+	---help---
+		Enable CRC on packets
+
+config RF_RFM95_SPREADING_FACTOR
+	int "RFM95 spreading factor"
+	default 9
+	---help---
+		Set spreading factor for LoRa modulation
+
+config RF_RFM95_BANDWIDTH
+	int "RFM95 bandwidth"
+	default 500000
+	---help---
+		Set bandwidth for LoRa modulation
 
 endif # RF_RFM95
 

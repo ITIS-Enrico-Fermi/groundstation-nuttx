@@ -35,7 +35,7 @@
 #include "esp32_gpio.h"
 
 
-#if 1 || defined(CONFIG_SPI) && defined(CONFIG_RF_RFM95)
+#if defined(CONFIG_SPI) && defined(CONFIG_RF_RFM95)
 
 #include <nuttx/irq.h>
 #include <nuttx/config.h>
@@ -87,6 +87,22 @@ static struct rfm95_dev_s rfm_dev;
 static char recv_buffer[256];  /* Buffer for SPI response */
 static int recv_buffer_len = 0;  /* Length of SPI response */
 
+void rfm95_configspi(void) {
+  _info("\n");
+  SPI_LOCK(rfm_dev.spi, true);
+
+  /* Set SPI Mode (Polarity and Phase) and Transfer Size (8 bits) */
+
+  SPI_SETMODE(rfm_dev.spi, RFM95_SPI_MODE);
+  SPI_SETBITS(rfm_dev.spi, 8);
+
+  /* Set SPI Hardware Features and Frequency */
+
+  SPI_HWFEATURES(rfm_dev.spi, 0);
+  SPI_SETFREQUENCY(rfm_dev.spi, CONFIG_RF_RFM95_SPI_FREQUENCY);
+
+  SPI_LOCK(rfm_dev.spi, false);
+}
 
 int rfm95_read_reg(int reg) {
   uint8_t out[2] = { reg, 0xff };
@@ -133,20 +149,14 @@ void rfm95_write_reg(int reg, int val) {
   SPI_LOCK(rfm_dev.spi, false);
 }
 
+
+static int __implicit;
+static long __frequency;
+
 /**
- * Set coding rate 
- * @param denominator 5-8, Denominator for the coding rate 4/x
- */ 
-void rfm95_set_coding_rate(int denominator) {
-   if (denominator < 5) denominator = 5;
-   else if (denominator > 8) denominator = 8;
-
-   int cr = denominator - 4;
-   rfm95_write_reg(REG_MODEM_CONFIG_1, (rfm95_read_reg(REG_MODEM_CONFIG_1) & 0xf1) | (cr << 1));
-}
-
-/* Sends a reset signal down the RST GPIO pin */
-static void rfm95_reset() {
+ * Perform physical reset on the Lora chip
+ */
+void rfm95_reset(void) {
   esp32_gpiowrite(CONFIG_RF_RFM95_RESET_PIN, 0);
   up_mdelay(1);
   esp32_gpiowrite(CONFIG_RF_RFM95_RESET_PIN, 1);
@@ -154,14 +164,58 @@ static void rfm95_reset() {
 }
 
 /**
+ * Configure explicit header mode.
+ * Packet size will be included in the frame.
+ */
+void rfm95_explicit_header_mode(void) {
+  __implicit = 0;
+  rfm95_write_reg(REG_MODEM_CONFIG_1, rfm95_read_reg(REG_MODEM_CONFIG_1) & 0xfe);
+}
+
+/**
+ * Configure implicit header mode.
+ * All packets will have a predefined size.
+ * @param size Size of the packets.
+ */
+void rfm95_implicit_header_mode(int size) {
+  __implicit = 1;
+  rfm95_write_reg(REG_MODEM_CONFIG_1, rfm95_read_reg(REG_MODEM_CONFIG_1) | 0x01);
+  rfm95_write_reg(REG_PAYLOAD_LENGTH, size);
+}
+
+/**
+ * Sets the radio transceiver in idle mode.
+ * Must be used to change registers and access the FIFO.
+ */
+void rfm95_idle(void) {
+  rfm95_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_STDBY);
+}
+
+/**
+ * Sets the radio transceiver in sleep mode.
+ * Low power consumption and FIFO is lost.
+ */
+void rfm95_sleep(void) { 
+  rfm95_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_SLEEP);
+}
+
+/**
+ * Sets the radio transceiver in receive mode.
+ * Incoming packets will be received.
+ */
+void rfm95_receive(void) {
+  rfm95_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_RX_CONTINUOUS);
+}
+
+/**
  * Configure power level for transmission
  * @param level 2-17, from least to most power
  */
 void rfm95_set_tx_power(int level) {
-   // RF9x module uses PA_BOOST pin
-   if (level < 2) level = 2;
-   else if (level > 17) level = 17;
-   rfm95_write_reg(REG_PA_CONFIG, PA_BOOST | (level - 2));
+  // RF9x module uses PA_BOOST pin
+  if (level < 2) level = 2;
+  else if (level > 17) level = 17;
+  rfm95_write_reg(REG_PA_CONFIG, PA_BOOST | (level - 2));
 }
 
 /**
@@ -169,11 +223,13 @@ void rfm95_set_tx_power(int level) {
  * @param frequency Frequency in Hz
  */
 void rfm95_set_frequency(long frequency) {
-   uint64_t frf = ((uint64_t)frequency << 19) / 32000000;
+  __frequency = frequency;
 
-   rfm95_write_reg(REG_FRF_MSB, (uint8_t)(frf >> 16));
-   rfm95_write_reg(REG_FRF_MID, (uint8_t)(frf >> 8));
-   rfm95_write_reg(REG_FRF_LSB, (uint8_t)(frf >> 0));
+  uint64_t frf = ((uint64_t)frequency << 19) / 32000000;
+
+  rfm95_write_reg(REG_FRF_MSB, (uint8_t)(frf >> 16));
+  rfm95_write_reg(REG_FRF_MID, (uint8_t)(frf >> 8));
+  rfm95_write_reg(REG_FRF_LSB, (uint8_t)(frf >> 0));
 }
 
 /**
@@ -181,18 +237,18 @@ void rfm95_set_frequency(long frequency) {
  * @param sf 6-12, Spreading factor to use.
  */
 void rfm95_set_spreading_factor(int sf) {
-   if (sf < 6) sf = 6;
-   else if (sf > 12) sf = 12;
+  if (sf < 6) sf = 6;
+  else if (sf > 12) sf = 12;
 
-   if (sf == 6) {
-      rfm95_write_reg(REG_DETECTION_OPTIMIZE, 0xc5);
-      rfm95_write_reg(REG_DETECTION_THRESHOLD, 0x0c);
-   } else {
-      rfm95_write_reg(REG_DETECTION_OPTIMIZE, 0xc3);
-      rfm95_write_reg(REG_DETECTION_THRESHOLD, 0x0a);
-   }
+  if (sf == 6) {
+    rfm95_write_reg(REG_DETECTION_OPTIMIZE, 0xc5);
+    rfm95_write_reg(REG_DETECTION_THRESHOLD, 0x0c);
+  } else {
+    rfm95_write_reg(REG_DETECTION_OPTIMIZE, 0xc3);
+    rfm95_write_reg(REG_DETECTION_THRESHOLD, 0x0a);
+  }
 
-   rfm95_write_reg(REG_MODEM_CONFIG_2, (rfm95_read_reg(REG_MODEM_CONFIG_2) & 0x0f) | ((sf << 4) & 0xf0));
+  rfm95_write_reg(REG_MODEM_CONFIG_2, (rfm95_read_reg(REG_MODEM_CONFIG_2) & 0x0f) | ((sf << 4) & 0xf0));
 }
 
 /**
@@ -216,62 +272,65 @@ void rfm95_set_bandwidth(long sbw) {
 }
 
 /**
+ * Set coding rate 
+ * @param denominator 5-8, Denominator for the coding rate 4/x
+ */ 
+void rfm95_set_coding_rate(int denominator) {
+  if (denominator < 5) denominator = 5;
+  else if (denominator > 8) denominator = 8;
+
+  int cr = denominator - 4;
+  rfm95_write_reg(REG_MODEM_CONFIG_1, (rfm95_read_reg(REG_MODEM_CONFIG_1) & 0xf1) | (cr << 1));
+}
+
+/**
+ * Set the size of preamble.
+ * @param length Preamble length in symbols.
+ */
+void rfm95_set_preamble_length(long length) {
+  rfm95_write_reg(REG_PREAMBLE_MSB, (uint8_t)(length >> 8));
+  rfm95_write_reg(REG_PREAMBLE_LSB, (uint8_t)(length >> 0));
+}
+
+/**
+ * Change radio sync word.
+ * @param sw New sync word to use.
+ */
+void rfm95_set_sync_word(int sw) {
+  rfm95_write_reg(REG_SYNC_WORD, sw);
+}
+
+/**
  * Enable appending/verifying packet CRC.
  */
-void rfm95_enable_crc() {
-   rfm95_write_reg(REG_MODEM_CONFIG_2, rfm95_read_reg(REG_MODEM_CONFIG_2) | 0x04);
+void rfm95_enable_crc(void) {
+  rfm95_write_reg(REG_MODEM_CONFIG_2, rfm95_read_reg(REG_MODEM_CONFIG_2) | 0x04);
 }
 
 /**
- * Sets the radio transceiver in sleep mode.
- * Low power consumption and FIFO is lost.
+ * Disable appending/verifying packet CRC.
  */
-void rfm95_sleep() {
-  _info("Set sleep");
-  rfm95_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_SLEEP);
+void rfm95_disable_crc(void) {
+  rfm95_write_reg(REG_MODEM_CONFIG_2, rfm95_read_reg(REG_MODEM_CONFIG_2) & 0xfb);
 }
 
 /**
- * Sets the radio transceiver in idle mode.
- * Must be used to change registers and access the FIFO.
+ * Perform hardware initialization.
  */
-void rfm95_idle() {
-  rfm95_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_STDBY);
-}
-
-static inline void rfm95_configspi() {
-  _info("\n");
-  SPI_LOCK(rfm_dev.spi, true);
-
-  /* Set SPI Mode (Polarity and Phase) and Transfer Size (8 bits) */
-
-  SPI_SETMODE(rfm_dev.spi, RFM95_SPI_MODE);
-  SPI_SETBITS(rfm_dev.spi, 8);
-
-  /* Set SPI Hardware Features and Frequency */
-
-  SPI_HWFEATURES(rfm_dev.spi, 0);
-  SPI_SETFREQUENCY(rfm_dev.spi, CONFIG_RF_RFM95_SPI_FREQUENCY);
-
-  SPI_LOCK(rfm_dev.spi, false);
-
-  /* Configure reset pin */
+int rfm95_init(void) {
+  /*
+  * Configure MCU hardware to communicate with the radio chip
+  */
   esp32_configgpio(CONFIG_RF_RFM95_RESET_PIN, OUTPUT);
-
-  /* Configure cs spi pin */
   esp32_configgpio(CONFIG_RF_RFM95_SPI_CS_PIN, OUTPUT);
-}
 
-static void rfm95_init(FAR struct file *filep) {
-  DEBUGASSERT(filep  != NULL);
-  
-  /* Get the SPI interface */
-  FAR struct inode *inode = filep->f_inode;
-  DEBUGASSERT(inode != NULL);
-
-  rfm95_reset();
 
   rfm95_configspi();
+
+  /*
+  * Perform hardware reset.
+  */
+  rfm95_reset();
 
   /*
   * Check version.
@@ -283,8 +342,7 @@ static void rfm95_init(FAR struct file *filep) {
     if(version == 0x12) break;
     up_mdelay(2);
   }
-  DEBUGASSERT(i < TIMEOUT_RESET + 1); // at the end of the loop above, the max value i can reach is TIMEOUT_RESET + 1
-  _info("Version: %d\n", version);
+  assert(i <= TIMEOUT_RESET + 1); // at the end of the loop above, the max value i can reach is TIMEOUT_RESET + 1
 
   /*
   * Default configuration.
@@ -292,24 +350,28 @@ static void rfm95_init(FAR struct file *filep) {
   rfm95_sleep();
   rfm95_write_reg(REG_FIFO_RX_BASE_ADDR, 0);
   rfm95_write_reg(REG_FIFO_TX_BASE_ADDR, 0);
-  rfm95_write_reg(REG_LNA, rfm95_read_reg(REG_LNA) | 0x03); //LNA boost
-  rfm95_write_reg(REG_MODEM_CONFIG_3, 0x04);                //auto AGC
-
-  rfm95_set_tx_power(CONFIG_RF_RFM95_TX_POWER);
-  
-  //set sync mode
+  rfm95_write_reg(REG_LNA, rfm95_read_reg(REG_LNA) | 0x03);
+  rfm95_write_reg(REG_MODEM_CONFIG_3, 0x04);
 
   rfm95_idle();
 
   rfm95_set_frequency(CONFIG_RF_RFM95_TX_FREQ);
-  rfm95_set_spreading_factor(9);
-  rfm95_set_bandwidth(500e3);
-
-  if(true) //TODO: parametrize CRC enable
+  rfm95_set_tx_power(CONFIG_RF_RFM95_TX_POWER);
+  rfm95_set_spreading_factor(CONFIG_RF_RFM95_SPREADING_FACTOR);
+  rfm95_set_bandwidth(CONFIG_RF_RFM95_BANDWIDTH);
+  #ifdef CONFIG_RF_RFM95_ENABLE_CRC
     rfm95_enable_crc();
+  #endif
+  //rfm95_implicit_header_mode(11);
 
+  return 1;
 }
 
+/**
+ * Send a packet.
+ * @param buf Data to be sent
+ * @param size Size of data.
+ */
 void rfm95_send_packet(const uint8_t *buf, int size) {
   /*
   * Transfer data to radio.
@@ -326,15 +388,82 @@ void rfm95_send_packet(const uint8_t *buf, int size) {
   * Start transmission and wait for conclusion.
   */
   rfm95_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_TX);
-  int irq_reg = rfm95_read_reg(REG_IRQ_FLAGS);
-  while((irq_reg & IRQ_TX_DONE_MASK) == 0)
-  {
-    syslog(LOG_INFO, "waiting TX_DONE. Reg value: %d", irq_reg);
-    up_mdelay(100);
-  }
-  
+  while((rfm95_read_reg(REG_IRQ_FLAGS) & IRQ_TX_DONE_MASK) == 0)
+    up_mdelay(2);
+
   rfm95_write_reg(REG_IRQ_FLAGS, IRQ_TX_DONE_MASK);
 }
+
+/**
+ * Read a received packet.
+ * @param buf Buffer for the data.
+ * @param size Available size in buffer (bytes).
+ * @return Number of bytes received (zero if no packet available).
+ */
+int rfm95_receive_packet(uint8_t *buf, int size) {
+  int len = 0;
+
+  rfm95_sleep();
+  rfm95_receive();
+
+  /*
+  * Check interrupts.
+  */
+  int irq;
+  do {
+    irq = rfm95_read_reg(REG_IRQ_FLAGS);
+    rfm95_write_reg(REG_IRQ_FLAGS, irq);
+
+    //_info("irq: %x\n", irq);
+    up_mdelay(100);
+  } while((irq & IRQ_RX_DONE_MASK) == 0);
+
+  if(irq & IRQ_PAYLOAD_CRC_ERROR_MASK) {
+    _info("CRC error");
+    return 0;
+  }
+
+  /*
+  * Find packet size.
+  */
+  if (__implicit) len = rfm95_read_reg(REG_PAYLOAD_LENGTH);
+  else len = rfm95_read_reg(REG_RX_NB_BYTES);
+
+  /*
+  * Transfer data from radio.
+  */
+  rfm95_idle();   
+  rfm95_write_reg(REG_FIFO_ADDR_PTR, rfm95_read_reg(REG_FIFO_RX_CURRENT_ADDR));
+  if(len > size) len = size;
+  for(int i=0; i<len; i++) 
+    *buf++ = rfm95_read_reg(REG_FIFO);
+
+  return len;
+}
+
+/**
+ * Returns non-zero if there is data to read (packet received).
+ */
+int rfm95_received(void) {
+  if(rfm95_read_reg(REG_IRQ_FLAGS) & IRQ_RX_DONE_MASK) return 1;
+  return 0;
+}
+
+/**
+ * Return last packet's RSSI.
+ */
+int rfm95_packet_rssi(void) {
+  return (rfm95_read_reg(REG_PKT_RSSI_VALUE) - (__frequency < 868E6 ? 164 : 157));
+}
+
+/**
+ * Return last packet's SNR (signal to noise ratio).
+ */
+float rfm95_packet_snr(void) {
+  return ((int8_t)rfm95_read_reg(REG_PKT_SNR_VALUE)) * 0.25;
+}
+
+
 
 
 
@@ -386,8 +515,17 @@ static ssize_t rfm95_write(FAR struct file *filep, FAR const char *buffer, size_
   return buflen;
 }
 
+/**
+ * Waits for a packet and writes it in buffer, this call is blocking.
+*/
 static ssize_t rfm95_read(FAR struct file *filep, FAR char *buffer, size_t buflen) {
-  return -ENOSYS;
+  _info("buflen=%u\n", buflen);
+  DEBUGASSERT(buflen <= sizeof(recv_buffer));
+  DEBUGASSERT(buffer != NULL);
+  DEBUGASSERT(filep  != NULL);
+
+  int len = rfm95_receive_packet(buffer, buflen);
+  return len;
 }
 
 static int rfm95_ioctl(FAR struct file *filep, int cmd, unsigned long arg) {
@@ -399,7 +537,12 @@ static int rfm95_ioctl(FAR struct file *filep, int cmd, unsigned long arg) {
   switch (cmd)
     {
       case RFM95_IOCTL_INIT:
-        rfm95_init(filep);
+        rfm95_init();
+        break;
+
+      case RFM95_IOCTL_RECEIVER:
+        rfm95_sleep();
+        rfm95_receive();
         break;
 
       default:

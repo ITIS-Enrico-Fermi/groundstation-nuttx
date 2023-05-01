@@ -5,6 +5,7 @@
 
 /* Initialize RFM9x module */
 #define RFM95_IOCTL_INIT 0
+#define RFM95_IOCTL_RECEIVER 1
 
 #ifdef __cplusplus
 #define EXTERN extern "C"
