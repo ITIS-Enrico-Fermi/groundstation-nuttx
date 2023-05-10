@@ -362,7 +362,8 @@ int rfm95_init(void) {
   #ifdef CONFIG_RF_RFM95_ENABLE_CRC
     rfm95_enable_crc();
   #endif
-  //rfm95_implicit_header_mode(11);
+  if(CONFIG_RF_RFM95_SYNC_WORD != 0)
+    rfm95_set_sync_word(CONFIG_RF_RFM95_SYNC_WORD);
 
   return 1;
 }
